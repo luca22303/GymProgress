@@ -17,6 +17,8 @@ suggests what to beat next, so progressive overload actually happens.
   - Boxes turn orange when you beat last time. The circle fills when every set
     has reps; tap it to fold the card.
   - The note you write is shown the next time you do that exercise.
+  - Each day starts with 4 slots. *remove* on a card drops it for today;
+    Settings changes the slots for good.
 - **☰ → Progress** – weight and estimated 1-rep max per exercise, session
   history (▲ = new best), and sets per muscle over the last 7 days.
 - **☰ → Body** – daily bodyweight with a 7-day average; tap *+ Measurements*
