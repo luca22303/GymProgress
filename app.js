@@ -11,36 +11,43 @@ const MEASURES = ['Chest', 'Shoulders', 'Waist', 'Hips', 'Arm L', 'Arm R', 'Thig
 
 // `group` is what the weekly-volume chart counts under, so upper and mid chest
 // both add to "Chest" — the 10–20 sets/week guideline is per muscle, not per slot.
+// Four slots a day; dropped muscles (front delts, pushdowns, forearms, abs) can
+// be added back under Settings → + Add slot.
 const slot = (id, muscle, group, min, max) => ({ id, muscle, group, min, max });
 const DEFAULT_PROGRAM = {
   push: [
     slot('upper-chest', 'Upper chest', 'Chest', 6, 10),
     slot('mid-chest', 'Mid chest', 'Chest', 6, 10),
-    slot('front-delts', 'Front delts', 'Front delts', 6, 10),
     slot('side-delts', 'Side delts', 'Side delts', 10, 15),
     slot('tri-overhead', 'Triceps overhead', 'Triceps', 8, 12),
-    slot('tri-pushdown', 'Triceps pushdown', 'Triceps', 10, 15),
   ],
   pull: [
     slot('lats', 'Lats (vertical pull)', 'Lats', 6, 10),
     slot('upper-back', 'Upper back (rows)', 'Upper back', 6, 10),
     slot('rear-delts', 'Rear delts', 'Rear delts', 12, 20),
     slot('biceps', 'Biceps', 'Biceps', 8, 12),
-    slot('brachialis', 'Brachialis / forearms', 'Forearms', 10, 15),
   ],
   legs: [
     slot('quads', 'Quads', 'Quads', 6, 10),
     slot('hamstrings', 'Hamstrings', 'Hamstrings', 8, 12),
     slot('glutes', 'Glutes', 'Glutes', 8, 12),
     slot('calves', 'Calves', 'Calves', 10, 15),
-    slot('abs', 'Abs', 'Abs', 10, 15),
   ],
+};
+// The first release shipped 6/5/5 slots. A day still exactly like that was never
+// customised, so it moves to the 4-slot default; an edited day is left alone.
+const PROGRAM_REV = 2;
+const REV1_IDS = {
+  push: 'upper-chest,mid-chest,front-delts,side-delts,tri-overhead,tri-pushdown',
+  pull: 'lats,upper-back,rear-delts,biceps,brachialis',
+  legs: 'quads,hamstrings,glutes,calves,abs',
 };
 
 // ---------- state ----------
 function freshState() {
   return {
     v: 1,
+    programRev: PROGRAM_REV,
     settings: { unit: 'kg', inc: 2.5 },
     program: JSON.parse(JSON.stringify(DEFAULT_PROGRAM)),
     slotNames: {},          // slot id -> last exercise name typed for it
@@ -53,9 +60,28 @@ function freshState() {
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s && s.v === 1) return Object.assign(freshState(), s, { ui: Object.assign(freshState().ui, s.ui) });
+    if (s && s.v === 1) {
+      const st = migrate(Object.assign(freshState(), { programRev: 1 }, s, { ui: Object.assign(freshState().ui, s.ui) }));
+      if (st.programRev !== s.programRev) localStorage.setItem(KEY, JSON.stringify(st));
+      return st;
+    }
   } catch (e) { /* fall through to a fresh state */ }
   return freshState();
+}
+function migrate(st) {
+  if (st.programRev < 2) {
+    for (const d of ['push', 'pull', 'legs']) {
+      if (st.program[d].map(x => x.id).join(',') === REV1_IDS[d]) st.program[d] = JSON.parse(JSON.stringify(DEFAULT_PROGRAM[d]));
+    }
+    // A session opened but not logged yet (e.g. today's) sheds the dropped slots too.
+    for (const ses of st.sessions) {
+      if (ses.items.some(it => it.sets.some(x => String(x.r ?? '').trim() !== ''))) continue;
+      const keep = new Set(st.program[ses.day].map(x => x.id));
+      ses.items = ses.items.filter(it => !it.slot || keep.has(it.slot));
+    }
+    st.programRev = 2;
+  }
+  return st;
 }
 let S = load();
 function save() {
@@ -219,7 +245,7 @@ function renderToday() {
       <div class="bar"><i id="progress"></i></div>
       <div id="cards">${ses.items.map((it, i) => cardHTML(ses, it, i)).join('')}</div>
       <button class="add-ex" data-act="add-ex">+ Add exercise to today</button>
-      <div class="hint">Grey numbers = last time. Leave weight empty to repeat it; type reps to log the set.<br>The circle fills once every set has reps — tap it to fold the card.</div>
+      <div class="hint">Grey numbers = last time. Leave weight empty to repeat it; type reps to log the set.<br>The circle fills once every set has reps — tap it to fold the card.<br>“remove” drops an exercise for today; to drop it for good use ☰ → Settings.</div>
     </section>`;
   }
   el.innerHTML = html;
@@ -245,7 +271,7 @@ function cardHTML(ses, it, i) {
   return `<article class="ex ${folded ? 'folded' : ''}" data-i="${i}">
     <div class="ex-head">
       <div style="flex:1;min-width:0">
-        <div class="ex-label"><b>Exercise ${i + 1}</b> · ${esc(it.muscle)} · ${it.min}–${it.max} reps${it.slot ? '' : `<button class="rm-ex" data-act="rm-ex">remove</button>`}</div>
+        <div class="ex-label"><b>Exercise ${i + 1}</b> · ${esc(it.muscle)} · ${it.min}–${it.max} reps<button class="rm-ex" data-act="rm-ex">remove</button></div>
         <input class="ex-name" data-f="name" value="${esc(it.name)}" placeholder="Type your exercise…" autocomplete="off" autocapitalize="words">
         <div class="folded-sum"></div>
       </div>
@@ -319,7 +345,8 @@ function onTodayClick(e) {
   if (act === 'add-set') { it.sets.push({ r: '', w: '' }); save(); rerenderCard(ses, i); }
   else if (act === 'del-set') { it.sets.splice(+b.dataset.k, 1); save(); rerenderCard(ses, i); }
   else if (act === 'rm-ex') {
-    if (!confirm('Remove this exercise from today?')) return;
+    // Only ask when something would be lost; an empty slot just goes.
+    if (it.sets.some(x => x.r !== '' || x.w !== '') && !confirm('Remove this exercise and its logged sets from today?')) return;
     ses.items.splice(i, 1); S.ui.folded = {}; save(); renderToday();
   }
   else if (act === 'fold' && card.classList.contains('done')) {
@@ -585,7 +612,7 @@ function renderSettings(msg = '') {
   const d = S.ui.settingsDay;
   el.innerHTML = `<div class="panel">
     <h3>Program</h3>
-    <div class="sub">Exercise slots per day — a muscle group and its rep range. You type the actual exercise on the Today screen. Changes apply from the next session you open.</div>
+    <div class="sub">Exercise slots per day — a muscle group and its rep range. You type the actual exercise on the Today screen. Changes apply from the next session you open; to drop an exercise just for today, tap “remove” on its card.</div>
     <div class="chips">${['push', 'pull', 'legs'].map(x => `<button class="chip ${x === d ? 'on' : ''}" data-act="sday" data-day="${x}">${DAY_NAMES[x]}</button>`).join('')}</div>
     ${S.program[d].map((sl, i) => `<div class="slot" data-i="${i}">
       <input class="nm" data-f="muscle" value="${esc(sl.muscle)}">
@@ -666,7 +693,7 @@ function importData(file) {
       const s = JSON.parse(r.result);
       if (!s || s.v !== 1 || !Array.isArray(s.sessions)) throw new Error('not a GymProgress backup');
       if (!confirm(`Replace all data on this phone with the backup (${s.sessions.length} sessions, ${s.body.length} body entries)?`)) return;
-      S = Object.assign(freshState(), s, { ui: Object.assign(freshState().ui, s.ui) });
+      S = migrate(Object.assign(freshState(), { programRev: 1 }, s, { ui: Object.assign(freshState().ui, s.ui) }));
       save(); renderSettings('Backup restored ✓');
     } catch (err) { renderSettings('Could not read that file: ' + err.message); }
   };
